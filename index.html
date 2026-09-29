@@ -236,3 +236,13 @@ async def export_success(request: Request, pdf_path: str):
         "request": request,
         "pdf_path": pdf_path
     })
+
+
+@router.get("/test-image")
+async def test_image(prompt: str = "A futuristic city at sunset, sci-fi, cinematic, artstation"):
+    try:
+        image_path = generate_image(prompt)
+        # Fixed line below: changed ( ) to { }
+        return {"message": "Image generated successfully", "path": image_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
