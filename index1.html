@@ -1,0 +1,393 @@
+def generate_outline(user_prompt: str) -> list:
+    """
+    Generates a 5-panel comic layout based on the user's story idea using Gemini.
+    
+    Args:
+        user_prompt (str): The user's comic idea prompt.
+        
+    Returns:
+        list: A list of dictionaries, one for each panel.
+    """
+    prompt = f"""
+You are a professional AI comic planner.
+
+Your task is to generate a *strictly formatted* JSON array containing 5 panel descriptions for a comic based on the story idea below:
+
+STORY: "{user_prompt}"
+
+Each JSON object must include:
+- "panel" (integer)
+- "title" (string)
+- "scene_description" (string)
+- "image_prompt" (string)
+
+Respond ONLY in this valid JSON format, without any explanations or markdown:
+[
+  {{
+    "panel": 1,
+    "title": "Title here",
+    "scene_description": "Scene description here",
+    "image_prompt": "Image prompt for Stable Diffusion"
+  }},
+  ...
+]
+"""
+qtry:
+
+response model.generate_content(prompt)
+
+output text response.text.strip()
+
+print("\n RAN GEMINI RESPONSE\n", output_text)
+
+Remove any markdown formatting if present
+
+if output text.startswith("```json"): output_text output_text.replace("json", "").replace("***", "").strip()
+
+panel data json.loads(output_text)
+
+Additional structure validation
+
+if not isinstance(panel_data, list): raise ValueError("Gemini response is not a list.")
+
+for panel in panel_data:
+
+if not isinstance(panel, dict) or not all(key in panel for key in ("panel", "title", "scene_description", "image_prompt")): raise ValueError(f"Invalid panel format or missing keys: (panel)")
+
+return panel_data
+
+except json. JSONDecodeError e:
+
+print("X SON Decode Error:", e) print("X Full Text Received:\n", output_text) return [["error": f"JSON parsing failed: (str(e))"}]
+
+except Exception as ex
+
+print("X Unexpected Error:", e) return (("error": f"Generation failed: (str(e))"}
+
+
+def generate_story(outline: list) -> str:
+    """
+    Generates a detailed comic story with narration and character dialogue
+    from a list of comic panel outlines using Gemini 1.5 Pro.
+
+    Args:
+        outline (list): A list of strings representing each comic panel's idea.
+
+    Returns:
+        str: The generated comic story text or an error message.
+    """
+
+    # Format the panel outline as a numbered list for clarity
+    formatted_outline = "\n".join([f"{i+1}. {item}" for i, item in enumerate(outline)])
+
+    # Construct the prompt
+    prompt = f"""
+You're a comic book writer.
+
+Given the following panel breakdown, write a comic-style story with engaging narration and character dialogues for each panel.
+
+Panel Outline:
+{formatted_outline}
+
+Guidelines:
+- Use a fun and engaging tone, like an actual comic book.
+- Include narration and clearly marked character lines.
+- Keep each panel self-contained but part of a cohesive story.
+"""
+
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error generating story: {str(e)}"
+
+
+def generate_image(prompt, filename=None):
+    if not filename:
+        filename = sanitize_filename(prompt)
+    
+    image = pipe(prompt).images[0]
+    path = f"static/panels/{filename}"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    image.save(path)
+    return path
+
+
+def build_comic_layout(image_paths, full_story, outline):
+    # Split the full story into individual panel segments
+    story_panels = full_story.split("**Panel")
+    story_panels = [f"**Panel{panel}" for panel in story_panels if panel.strip()]
+
+    # Build layout panel by panel
+    layout = []
+    for idx, (image, text, panel_info) in enumerate(zip(image_paths, story_panels, outline), start=1):
+        layout.append({
+            "panel": idx,
+            "title": panel_info.get("title", f"Panel {idx}"),
+            "image_path": image,
+            "text": "\n".join(text.strip().splitlines()[1:]).strip(),  # remove panel title
+            "scene_description": panel_info.get("scene_description", "")
+        })
+
+
+def save_pdf(layout):
+    pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Add unicode font
+    pdf.add_font('DejaVu', '', FONT_PATH, uni=True)
+    pdf.set_font('DejaVu', '', 12)
+    
+    for panel in layout:
+        image_path = panel['image_path']
+        story_text = panel['text']
+        
+        pdf.add_page()
+        
+        # Panel title (no bold)
+        pdf.set_font('DejaVu', '', 14)
+        pdf.cell(0, 10, f"Panel {panel['panel']}", ln=True, align="C")
+        pdf.set_font('DejaVu', '', 12)
+        
+        # Image placement
+        y_image = 30
+        image_height = 100
+        spacing_after_image = 15
+        
+        if os.path.exists(image_path):
+            pdf.image(image_path, x=10, y=y_image, w=pdf.w - 20, h=image_height)
+        else:
+            pdf.set_y(y_image)
+            pdf.multi_cell(0, 10, f"Image missing: {image_path}")
+            
+        # Text placement below image
+        pdf.set_y(y_image + image_height + spacing_after_image)
+        story_lines = story_text.strip().splitlines()
+        
+        # Remove title line like "**Panel 1: Title**" if present
+        if story_lines and story_lines[0].strip().lower().startswith("**panel"):
+            story_lines = story_lines[1:]
+            
+        cleaned_text = "\n".join(story_lines).strip()
+        pdf.multi_cell(0, 10, cleaned_text)
+        
+    # Save with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"comic_{timestamp}.pdf"
+    pdf_path = os.path.join(EXPORT_FOLDER, filename)
+    pdf.output(pdf_path)
+    
+    return pdf_path
+
+
+# Comic Generation Route:
+
+@router.post("/generate", response_class=HTMLResponse)
+async def generate_comic(
+    request: Request,
+    prompt: str = Form(...),
+    character_name: str = Form(...),
+    setting: str = Form(...),
+    tone: str = Form(...),
+    style: str = Form(...),
+):
+    try:
+        # Combine user input into a single full prompt
+        full_prompt = (
+            f"{prompt}\n"
+            f"The main character is {character_name}. "
+            f"The setting is a {setting}. "
+            f"The tone is {tone}. The art style is {style}."
+        )
+
+        # Step 1: Generate panel outline
+        outline = generate_outline(full_prompt)
+
+        if not isinstance(outline, list) or not all("image_prompt" in panel for panel in outline):
+            raise ValueError("Invalid outline structure from Gemini response.")
+
+        # Step 2: Generate story
+        full_story = generate_story(outline)
+
+        # Step 3: Generate images
+        images = [generate_image(panel["image_prompt"]) for panel in outline]
+
+        # Step 4: Build layout
+        layout = build_comic_layout(images, full_story, outline)
+
+        # Step 5: Export to PDF
+        pdf_path = save_pdf(layout)
+        web_pdf_path = "/" + pdf_path.replace("\\", "/") # Make path safe for web
+
+        return templates.TemplateResponse("comic_preview.html", {
+            "request": request,
+            "layout": layout,
+            "pdf_path": web_pdf_path
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export-success", response_class=HTMLResponse)
+async def export_success(request: Request, pdf_path: str):
+    return templates.TemplateResponse("export_success.html", {
+        "request": request,
+        "pdf_path": pdf_path
+    })
+
+
+@router.get("/test-image")
+async def test_image(prompt: str = "A futuristic city at sunset, sci-fi, cinematic, artstation"):
+    try:
+        image_path = generate_image(prompt)
+        # Fixed line below: changed ( ) to { }
+        return {"message": "Image generated successfully", "path": image_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+output
+================================
+STARTING COMIC GENERATION
+================================
+
+STEP 1: Generating outline...
+
+===== GEMINI OUTLINE RESPONSE =====
+
+[
+  {
+    "panel": 1,
+    "title": "Into the Enchanted Forest",
+    "scene_description": "Finn, a brave young fox, enters a mysterious enchanted forest filled with glowing plants and ancient trees.",
+    "image_prompt": "A brave orange fox named Finn entering a magical enchanted forest, glowing plants, ancient trees, moonlight, anime comic style, cinematic lighting, highly detailed"
+  },
+  {
+    "panel": 2,
+    "title": "The Mysterious Light",
+    "scene_description": "Finn discovers a strange glowing crystal hidden among the roots of an enormous tree.",
+    "image_prompt": "A brave orange fox discovering a mysterious glowing crystal beneath an ancient tree, magical blue light, enchanted forest, anime comic style, cinematic"
+  },
+  {
+    "panel": 3,
+    "title": "The Forest Guardian",
+    "scene_description": "A giant magical owl appears and challenges Finn to prove his courage.",
+    "image_prompt": "A giant magical owl appearing before a brave orange fox in an enchanted forest, dramatic atmosphere, glowing eyes, anime comic art style"
+  },
+  {
+    "panel": 4,
+    "title": "The Courageous Choice",
+    "scene_description": "Finn refuses to run away and bravely protects the magical crystal from a dark shadow.",
+    "image_prompt": "Brave orange fox protecting a glowing magical crystal from a dark shadow creature, dramatic action scene, enchanted forest, anime comic style"
+  },
+  {
+    "panel": 5,
+    "title": "A New Friendship",
+    "scene_description": "Finn succeeds in the challenge and earns the respect of the forest guardian.",
+    "image_prompt": "Brave orange fox standing beside a giant magical owl in a beautiful enchanted forest, sunrise, magical atmosphere, anime comic style"
+  }
+]
+
+STEP 2: Generating story...
+
+===== GENERATED STORY =====
+
+Panel 1: Into the Enchanted Forest
+
+Narration:
+The moon hung high above the ancient forest as Finn stepped beneath the enormous trees.
+
+Finn:
+"I wonder what secrets are hiding in here."
+
+Panel 2: The Mysterious Light
+
+Narration:
+Suddenly, a brilliant blue glow caught Finn's attention.
+
+Finn:
+"Whoa! What is that?"
+
+Narration:
+Hidden beneath the roots was a magical crystal.
+
+Panel 3: The Forest Guardian
+
+Narration:
+A huge owl spread its wings and descended from the darkness.
+
+Guardian:
+"Only those with true courage may touch the crystal."
+
+Finn:
+"I won't turn back!"
+
+Panel 4: The Courageous Choice
+
+Narration:
+A dark shadow rushed toward the crystal.
+
+Finn:
+"I have to protect it!"
+
+Narration:
+Finn stood bravely between the shadow and the magical crystal.
+
+Panel 5: A New Friendship
+
+Narration:
+The shadow disappeared, and the forest became peaceful once again.
+
+Guardian:
+"You have proven your courage, Finn."
+
+Finn:
+"Does this mean we're friends?"
+
+Narration:
+The guardian smiled as the first rays of sunlight entered the forest.
+
+STEP 3: Generating images...
+
+Generating image:
+A brave orange fox named Finn entering a magical enchanted forest...
+
+Image saved:
+static/panels/panel_1_202609291237001234.png
+
+Generating image:
+A brave orange fox discovering a mysterious glowing crystal...
+
+Image saved:
+static/panels/panel_2_202609291237002345.png
+
+Generating image:
+A giant magical owl appearing before a brave orange fox...
+
+Image saved:
+static/panels/panel_3_202609291237003456.png
+
+Generating image:
+Brave orange fox protecting a glowing magical crystal...
+
+Image saved:
+static/panels/panel_4_202609291237004567.png
+
+Generating image:
+Brave orange fox standing beside a giant magical owl...
+
+Image saved:
+static/panels/panel_5_202609291237005678.png
+
+STEP 4: Building comic layout...
+
+STEP 5: Creating PDF...
+
+PDF created:
+exports/comic_20260929123700.pdf
+
+================================
+COMIC GENERATION COMPLETE
+================================
