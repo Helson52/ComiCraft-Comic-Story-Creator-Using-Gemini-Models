@@ -178,3 +178,53 @@ def save_pdf(layout):
     pdf.output(pdf_path)
     
     return pdf_path
+
+
+# Comic Generation Route:
+
+@router.post("/generate", response_class=HTMLResponse)
+async def generate_comic(
+    request: Request,
+    prompt: str = Form(...),
+    character_name: str = Form(...),
+    setting: str = Form(...),
+    tone: str = Form(...),
+    style: str = Form(...),
+):
+    try:
+        # Combine user input into a single full prompt
+        full_prompt = (
+            f"{prompt}\n"
+            f"The main character is {character_name}. "
+            f"The setting is a {setting}. "
+            f"The tone is {tone}. The art style is {style}."
+        )
+
+        # Step 1: Generate panel outline
+        outline = generate_outline(full_prompt)
+
+        if not isinstance(outline, list) or not all("image_prompt" in panel for panel in outline):
+            raise ValueError("Invalid outline structure from Gemini response.")
+
+        # Step 2: Generate story
+        full_story = generate_story(outline)
+
+        # Step 3: Generate images
+        images = [generate_image(panel["image_prompt"]) for panel in outline]
+
+        # Step 4: Build layout
+        layout = build_comic_layout(images, full_story, outline)
+
+        # Step 5: Export to PDF
+        pdf_path = save_pdf(layout)
+        web_pdf_path = "/" + pdf_path.replace("\\", "/") # Make path safe for web
+
+        return templates.TemplateResponse("comic_preview.html", {
+            "request": request,
+            "layout": layout,
+            "pdf_path": web_pdf_path
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
